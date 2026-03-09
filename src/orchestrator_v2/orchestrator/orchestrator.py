@@ -89,4 +89,5 @@ class TraceDataOrchestrator:
 
     def invoke(self, event: Dict[str, Any]) -> Dict[str, Any]:
         state = {"event": event}
-        return self.graph.invoke(state)
+        compiled_graph = self.graph.compile()
+        return compiled_graph.invoke(state)
