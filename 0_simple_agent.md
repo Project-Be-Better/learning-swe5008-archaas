@@ -1,148 +1,213 @@
-```mermaid
-graph TB
-    User[User Query] --> Agent[Agent Class]
-    Agent --> OpenAI[OpenAI GPT-4 API]
-    OpenAI --> Response[Response]
-    Response --> Parser[Action Parser]
-    Parser --> Tool{Tool Call?}
-    Tool -->|Yes| Execute[Execute Tool Function]
-    Tool -->|No| Final[Final Answer]
-    Execute --> Observation[Observation]
-    Observation --> Agent
+# `0_simple_agent.ipynb` Code Walkthrough
 
-    style Agent fill:#4CAF50
-    style OpenAI fill:#2196F3
-    style Execute fill:#FF9800
-    style Final fill:#9C27B0
-```
+This document explains the code in `0_simple_agent.ipynb` step by step.
 
-```mermaid
-classDiagram
-    class Agent {
-        -str system
-        -list messages
-        +__init__(system)
-        +__call__(message)
-        +execute()
-    }
+## What this notebook demonstrates
 
-    class OpenAI {
-        +chat.completions.create()
-    }
+It builds a minimal ReAct-style agent loop in plain Python:
 
-    Agent --> OpenAI : uses
+- an OpenAI chat client (`gpt-4`),
+- one callable action (`estimate_trip_cost`),
+- an `Agent` class that stores conversation history,
+- manual and automated Thought/Action/Observation execution.
 
-    note for Agent "Maintains conversation history\nSends messages to LLM\nReturns responses"
-```
+## 0) Setup
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Agent
-    participant LLM as GPT-4
-    participant Tool as estimate_trip_cost
+The first cell includes an optional install command:
 
-    User->>Agent: Ask question about trip cost
-    Agent->>LLM: Send question + system prompt
-    LLM->>Agent: Thought + Action request
-    Agent->>Tool: Parse and execute action
-    Tool->>Agent: Return observation (cost)
-    Agent->>LLM: Send observation
-    LLM->>Agent: Final Answer
-    Agent->>User: Display result
+- `#pip install -q openai python-dotenv`
 
-    Note over Agent,LLM: Loop continues until<br/>no more actions needed
+This is commented because it is only needed in a fresh environment.
 
-```
+## 1) Imports
+
+The notebook imports:
+
+- `os` for environment variable access,
+- `load_dotenv` from `python-dotenv`,
+- `OpenAI` client SDK.
+
+## 2) Environment and client initialization
+
+The notebook supports two ways to provide API keys:
+
+- local: `load_dotenv()` reads `.env`,
+- Colab: set `os.environ["OPENAI_API_KEY"]` manually (commented example).
+
+Then it initializes:
+
+- `llm_name = "gpt-4"`
+- `openai_key = os.getenv("OPENAI_API_KEY")`
+- `client = OpenAI(api_key=openai_key)`
+
+## 3) Tool function: `estimate_trip_cost`
+
+This function is the only executable action available to the agent.
+
+Inputs:
+
+- `days: int`
+- `travelers: int`
+- `comfort: str = "mid"` where comfort is `budget | mid | premium`
+
+Validation:
+
+- raises `ValueError` if `days <= 0` or `travelers <= 0`
+- raises `ValueError` if comfort is not one of allowed values
+
+Budget logic:
+
+- picks per-person-per-day rates for lodging, food, transport, activities based on comfort
+- computes totals by multiplying each rate by `travelers * days`
+- adds a 12% contingency buffer
+
+Output:
+
+- returns a string: `"total_estimate: <number>"`
+
+Registration:
+
+- `known_actions = {"estimate_trip_cost": estimate_trip_cost}`
 
 ```mermaid
 flowchart TD
-    Start([Start: User Question]) --> Init[Create Agent with System Prompt]
-    Init --> Loop{i < max_turns?}
-    Loop -->|No| End([End: Max turns reached])
-    Loop -->|Yes| Call[Call Agent with next_prompt]
-    Call --> Parse[Parse response for Actions]
-    Parse --> Check{Action found?}
-    Check -->|No| Answer[Return Final Answer]
-    Check -->|Yes| Extract[Extract action name & params]
-    Extract --> Validate[Validate parameters with regex]
-    Validate --> Execute[Execute tool function]
-    Execute --> Obs[Create Observation message]
-    Obs --> Inc[Increment counter]
-    Inc --> Loop
-    Answer --> End
-
-    style Start fill:#4CAF50
-    style Execute fill:#FF9800
-    style Answer fill:#9C27B0
-    style End fill:#f44336
+    A[Input: days, travelers, comfort] --> B{Valid?}
+    B -->|No| C[Raise ValueError]
+    B -->|Yes| D[Choose comfort rates]
+    D --> E[Compute lodging/food/transport/activities]
+    E --> F[Subtotal]
+    F --> G[Add 12% contingency]
+    G --> H[Return total_estimate string]
 ```
 
-```mermaid
-flowchart LR
-    Input[Input: days, travelers, comfort] --> Validate{Valid inputs?}
-    Validate -->|No| Error[Raise ValueError]
-    Validate -->|Yes| Select[Select cost rates<br/>based on comfort]
-    Select --> Calc1[Calculate:<br/>lodging = rate × travelers × days]
-    Select --> Calc2[Calculate:<br/>food = rate × travelers × days]
-    Select --> Calc3[Calculate:<br/>transport = rate × travelers × days]
-    Select --> Calc4[Calculate:<br/>activities = rate × travelers × days]
-    Calc1 --> Sum[Sum all costs]
-    Calc2 --> Sum
-    Calc3 --> Sum
-    Calc4 --> Sum
-    Sum --> Buffer[Add 12% contingency]
-    Buffer --> Return[Return total estimate]
+## 4) Custom `Agent` class
 
-    style Input fill:#4CAF50
-    style Select fill:#2196F3
-    style Return fill:#9C27B0
-```
+The `Agent` class wraps chat completion calls and stores full message history.
 
-```mermaid
-stateDiagram-v2
-    [*] --> Initialize: Create Agent
-    Initialize --> AddSystem: Add system prompt
-    AddSystem --> Ready: Agent Ready
-    Ready --> AddUser: User calls agent(message)
-    AddUser --> Execute: Call LLM
-    Execute --> AddAssistant: Store LLM response
-    AddAssistant --> Ready: Return result
-    Ready --> [*]: Complete
+Key methods:
 
-    note right of AddUser
-        messages.append(
-            {role: "user",
-             content: message}
-        )
-    end note
-
-    note right of AddAssistant
-        messages.append(
-            {role: "assistant",
-             content: result}
-        )
-    end note
-```
+- `__init__(system="")`
+  - initializes `self.messages`
+  - if system prompt exists, appends it as the first message
+- `__call__(message)`
+  - appends user message
+  - calls `self.execute()`
+  - appends assistant reply
+  - returns assistant text
+- `execute()`
+  - calls `client.chat.completions.create(...)`
+  - sends full `self.messages` each time
+  - returns `response.choices[0].message.content`
 
 ```mermaid
 sequenceDiagram
-    autonumber
     participant U as User
     participant A as Agent
-    participant L as LLM (GPT-4)
-    participant T as Tool
+    participant L as GPT-4
 
-    U->>A: Which costs less:<br/>Tokyo 2d mid vs Malaysia 3d premium?
-    A->>L: Question + System Prompt
-    L->>A: Thought: Need to estimate both trips<br/>Action: estimate_trip_cost: 2, 2, "mid"
-    A->>T: estimate_trip_cost(2, 2, "mid")
-    T->>A: total_estimate: 1232
-    A->>L: Observation: total_estimate: 1232
-    L->>A: Thought: Need second estimate<br/>Action: estimate_trip_cost: 3, 2, "premium"
-    A->>T: estimate_trip_cost(3, 2, "premium")
-    T->>A: total_estimate: 4032
-    A->>L: Observation: total_estimate: 4032
-    L->>A: Answer: Tokyo trip costs less (1232 vs 4032)
-    A->>U: Display final answer
+    U->>A: message
+    A->>A: append {role:user}
+    A->>L: chat.completions.create(messages)
+    L->>A: assistant content
+    A->>A: append {role:assistant}
+    A->>U: return text
 ```
+
+## Prompt design
+
+The prompt instructs the model to follow:
+
+- `Thought`
+- `Action`
+- `Observation`
+- final `Answer`
+
+It also explicitly declares available action syntax:
+
+- `estimate_trip_cost: 2, 2, "mid"`
+
+This is important because downstream parsing expects this format.
+
+## 5) Simple query section
+
+`agent = Agent(system=prompt)` creates an agent instance.
+
+Then one direct question is sent:
+
+- `"a 2-day Tokyo trip for 2 adults..."`
+
+The nearby cells showing manual observation passing are currently commented out. They are examples of how to continue the loop by hand.
+
+## 6) Complex query section
+
+A comparison question is asked:
+
+- Tokyo 2-day mid comfort vs Malaysia 3-day premium comfort.
+
+Some follow-up manual steps are also present but commented out. Those cells are scaffold code for manual tool-observation cycles.
+
+## 7) Automated loop with `query(...)`
+
+This is the core automation part.
+
+Regex parsers:
+
+- `action_re = r"^Action: (\w+): (.*)$"`
+- `param_re` validates `days, travelers, comfort`
+
+Loop behavior in `query(question, max_turns=10)`:
+
+1. create fresh `Agent(prompt)`
+2. send `next_prompt`
+3. parse assistant output for `Action:` line
+4. if action found:
+   - parse parameters
+   - execute `known_actions[action](...)`
+   - send next prompt as `Observation: ...`
+5. if no action found:
+   - stop (final answer reached)
+
+```mermaid
+flowchart TD
+    S([Start question]) --> I[Create Agent with prompt]
+    I --> L{i < max_turns?}
+    L -->|No| E([Stop])
+    L -->|Yes| C[Call bot(next_prompt)]
+    C --> P[Parse Action line]
+    P --> A{Action found?}
+    A -->|No| R([Return final answer])
+    A -->|Yes| V[Validate and parse params]
+    V --> X[Execute known action]
+    X --> O[Build Observation prompt]
+    O --> L
+```
+
+## End-to-end architecture
+
+```mermaid
+graph LR
+    U[User Question] --> AG[Agent]
+    AG --> LLM[GPT-4]
+    LLM --> PR[Action Parser]
+    PR --> DEC{Action?}
+    DEC -->|Yes| TOOL[estimate_trip_cost]
+    TOOL --> OBS[Observation text]
+    OBS --> AG
+    DEC -->|No| ANS[Final Answer]
+```
+
+## Notes about current notebook state
+
+- The notebook uses plain OpenAI calls, not LangGraph.
+- Tool invocation is text-parsed, so formatting consistency of `Action:` lines matters.
+- Several cells in sections 5 and 6 are intentionally commented to show optional manual execution steps.
+
+## Summary
+
+`0_simple_agent.ipynb` is a foundational example of a hand-rolled tool-using agent:
+
+- keep conversation state in Python lists,
+- ask model to emit action commands,
+- run Python functions,
+- feed results back as observations,
+- stop when no action remains.
